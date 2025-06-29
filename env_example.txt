@@ -1,0 +1,6 @@
+# Google Gemini API Keys
+# 무료 API 키 (일일 사용량 제한 있음)
+GOOGLE_API_KEY_FREE="your_free_api_key_here"
+
+# 유료 API 키 (더 높은 사용량 제한)
+GOOGLE_API_KEY_PAID="your_paid_api_key_here"
