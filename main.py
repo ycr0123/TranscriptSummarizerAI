@@ -8,7 +8,7 @@ AI 기반 녹취록 자동 요약 및 정리 시스템
 import os
 import sys
 from pathlib import Path
-from transcript_summarizer import TranscriptSummarizer
+from transcript_summarizer import TranscriptSummarizer, API_MODES
 
 def print_banner():
     """프로그램 배너 출력"""
@@ -21,18 +21,31 @@ def get_api_mode() -> str:
     """API 모드 선택"""
     while True:
         print("API 모드를 선택하세요:")
-        print("1. 무료 API (일일 사용량 제한 있음)")
-        print("2. 유료 API (더 높은 사용량 제한)")
         print()
 
-        choice = input("선택 (1 또는 2): ").strip()
+        # API_MODES에서 동적으로 옵션 생성
+        mode_list = list(API_MODES.keys())
+        for i, mode in enumerate(mode_list, 1):
+            config = API_MODES[mode]
+            print(f"{i}. {config['display_name']}")
+            print(f"   모델: {config['model_name']}")
+            print(f"   요청 간 대기시간: {config['delay_seconds']}초")
+            print()
 
-        if choice == "1":
-            return "free"
-        elif choice == "2":
-            return "paid"
-        else:
-            print("잘못된 선택입니다. 1 또는 2를 입력하세요.")
+        choice = input(f"선택 (1-{len(mode_list)}): ").strip()
+
+        try:
+            choice_idx = int(choice) - 1
+            if 0 <= choice_idx < len(mode_list):
+                selected_mode = mode_list[choice_idx]
+                print(f"{API_MODES[selected_mode]['display_name']}를 선택했습니다.")
+                print()
+                return selected_mode
+            else:
+                print(f"잘못된 선택입니다. 1부터 {len(mode_list)} 사이의 숫자를 입력하세요.")
+                print()
+        except ValueError:
+            print("숫자를 입력하세요.")
             print()
 
 def get_custom_prompt() -> str:
@@ -143,11 +156,15 @@ def get_output_folder(input_folder: Path) -> Path:
 
 def confirm_settings(api_mode: str, input_folder: Path, output_folder: Path, custom_prompt: str):
     """설정 확인"""
+    mode_config = API_MODES[api_mode]
+
     print()
-    print("=" * 40)
+    print("=" * 50)
     print("설정 확인")
-    print("=" * 40)
-    print(f"API 모드: {'무료' if api_mode == 'free' else '유료'}")
+    print("=" * 50)
+    print(f"API 모드: {mode_config['display_name']}")
+    print(f"사용 모델: {mode_config['model_name']}")
+    print(f"요청 간 대기시간: {mode_config['delay_seconds']}초")
     print(f"입력 폴더: {input_folder}")
     print(f"출력 폴더: {output_folder}")
     print(f"프롬프트: {'사용자 정의' if custom_prompt else '기본'}")
@@ -156,7 +173,7 @@ def confirm_settings(api_mode: str, input_folder: Path, output_folder: Path, cus
         print("-" * 30)
         print(custom_prompt[:100] + "..." if len(custom_prompt) > 100 else custom_prompt)
         print("-" * 30)
-    print("=" * 40)
+    print("=" * 50)
     print()
 
     while True:

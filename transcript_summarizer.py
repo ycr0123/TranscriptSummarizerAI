@@ -6,6 +6,22 @@ from typing import List, Optional
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+# API 모드별 설정
+API_MODES = {
+    'free': {
+        'model_name': 'gemini-1.5-flash-latest',
+        'delay_seconds': 4,
+        'display_name': '무료 API (속도 제한)',
+        'env_key_name': 'GOOGLE_API_KEY_FREE'
+    },
+    'paid': {
+        'model_name': 'gemini-2.5-flash-preview-05-20',
+        'delay_seconds': 0.2,
+        'display_name': '유료 API (최대 속도)',
+        'env_key_name': 'GOOGLE_API_KEY_PAID'
+    }
+}
+
 class TranscriptSummarizer:
     """AI 기반 녹취록 자동 요약 및 정리 시스템"""
 
@@ -17,10 +33,19 @@ class TranscriptSummarizer:
             api_mode (str): API 모드 ("free" 또는 "paid")
             custom_prompt (str): 사용자 정의 프롬프트
         """
+        if api_mode not in API_MODES:
+            raise ValueError(f"지원되지 않는 API 모드입니다: {api_mode}. 지원되는 모드: {list(API_MODES.keys())}")
+
         self.api_mode = api_mode
+        self.mode_config = API_MODES[api_mode]
         self.custom_prompt = custom_prompt
         self.api_key = None
         self.model = None
+
+        # 토큰 사용량 누적을 위한 변수들
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+
         self.setup_logging()
         self.load_api_key()
         self.initialize_gemini()
@@ -46,20 +71,19 @@ class TranscriptSummarizer:
         """환경 변수에서 API 키 로드"""
         load_dotenv()
 
-        if self.api_mode == "free":
-            self.api_key = os.getenv("GOOGLE_API_KEY_FREE")
-        else:
-            self.api_key = os.getenv("GOOGLE_API_KEY_PAID")
+        env_key = self.mode_config['env_key_name']
+        self.api_key = os.getenv(env_key)
 
         if not self.api_key:
-            raise ValueError(f"{self.api_mode} API 키가 .env 파일에 설정되지 않았습니다.")
+            raise ValueError(f"{self.mode_config['display_name']} API 키가 .env 파일에 설정되지 않았습니다. 환경 변수명: {env_key}")
 
     def initialize_gemini(self):
         """Gemini API 초기화"""
         try:
             genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-pro')
-            self.logger.info(f"Gemini API 초기화 완료 ({self.api_mode} 모드)")
+            model_name = self.mode_config['model_name']
+            self.model = genai.GenerativeModel(model_name)
+            self.logger.info(f"Gemini API 초기화 완료 - 모드: {self.mode_config['display_name']}, 모델: {model_name}")
         except Exception as e:
             self.logger.error(f"Gemini API 초기화 실패: {e}")
             raise
@@ -141,8 +165,31 @@ class TranscriptSummarizer:
 
         for attempt in range(max_retries):
             try:
+                # API 모드에 따른 딜레이 적용
+                if attempt > 0:  # 첫 번째 시도가 아닌 경우에만 딜레이 적용
+                    delay_time = self.mode_config['delay_seconds']
+                    self.logger.info(f"API 속도 제한을 위해 {delay_time}초 대기 중...")
+                    time.sleep(delay_time)
+
                 response = self.model.generate_content(prompt + "\n\n" + content)
                 if response.text:
+                                        # 토큰 사용량 로깅 및 누적
+                    try:
+                        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                            input_tokens = getattr(response.usage_metadata, 'prompt_token_count', 0)
+                            output_tokens = getattr(response.usage_metadata, 'candidates_token_count', 0)
+                            total_tokens = getattr(response.usage_metadata, 'total_token_count', 0)
+
+                            # 토큰 사용량 누적
+                            self.total_input_tokens += input_tokens
+                            self.total_output_tokens += output_tokens
+
+                            self.logger.info(f"토큰 사용량 - 입력: {input_tokens}, 출력: {output_tokens}, 총합: {total_tokens} (모델: {self.mode_config['model_name']})")
+                        else:
+                            self.logger.info(f"토큰 사용량 정보를 가져올 수 없습니다. (모델: {self.mode_config['model_name']})")
+                    except Exception as token_error:
+                        self.logger.warning(f"토큰 사용량 로깅 실패: {token_error}")
+
                     return response.text
                 else:
                     raise Exception("API 응답이 비어있습니다.")
@@ -150,7 +197,10 @@ class TranscriptSummarizer:
             except Exception as e:
                 self.logger.warning(f"API 요청 실패 (시도 {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # 지수 백오프
+                    # 재시도 시 추가 딜레이 (지수 백오프 + 모드별 기본 딜레이)
+                    retry_delay = (2 ** attempt) + self.mode_config['delay_seconds']
+                    self.logger.info(f"재시도를 위해 {retry_delay}초 대기 중...")
+                    time.sleep(retry_delay)
                 else:
                     raise Exception(f"API 요청이 {max_retries}회 시도 후 실패했습니다: {e}")
 
@@ -191,8 +241,11 @@ class TranscriptSummarizer:
             # 입력 파일의 상대 경로 계산 (입력 폴더 기준)
             relative_path = input_file.relative_to(input_folder)
 
-            # 출력 파일 경로 생성 (폴더 구조 유지)
-            output_file = output_folder / relative_path.parent / f"{input_file.stem}_summary{input_file.suffix}"
+            # 모델명을 파일명에 포함하기 위해 정리 (특수문자 제거)
+            model_name_clean = self.mode_config['model_name'].replace('-', '_').replace('.', '_')
+
+            # 출력 파일 경로 생성 (폴더 구조 유지, 모델명 포함)
+            output_file = output_folder / relative_path.parent / f"{input_file.stem}_summary_{model_name_clean}{input_file.suffix}"
 
             # 파일 내용 읽기
             content = self.read_file_content(input_file)
@@ -260,5 +313,9 @@ class TranscriptSummarizer:
             "failed": failed_count
         }
 
+        # 총 토큰 사용량 로깅
+        total_tokens = self.total_input_tokens + self.total_output_tokens
         self.logger.info(f"처리 완료: 총 {len(txt_files)}개, 성공 {processed_count}개, 실패 {failed_count}개")
+        self.logger.info(f"전체 토큰 사용량 - 입력: {self.total_input_tokens:,}, 출력: {self.total_output_tokens:,}, 총합: {total_tokens:,} (모델: {self.mode_config['model_name']})")
+
         return result
